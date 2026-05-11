@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FireCoord - Komuta Merkezi</title>
+  <link rel="stylesheet" href="css/style.css">
+  <!-- Leaflet.js -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+</head>
+<body>
+
+<!-- ============ TOPBAR ============ -->
+<div class="topbar">
+  <div class="topbar-logo">
+    <span class="logo-icon">🔥</span>
+    FIRECOORD
+  </div>
+
+  <div class="topbar-weather">
+    <div class="weather-item">💨 <span class="wval" id="wbWind">NE 25km/s</span></div>
+    <div class="weather-item">🌡 <span class="wval" id="wbTemp">32°C</span></div>
+    <div class="weather-item">💧 <span class="wval" id="wbHumidity">28%</span></div>
+  </div>
+
+  <div class="topbar-spacer"></div>
+
+  <div class="topbar-time" id="clock">--:--:--</div>
+
+  <div class="topbar-alerts">
+    <div class="alert-badge" id="notifBtn" onclick="toggleNotif()">
+      🔔
+      <div class="badge-count" id="notifBadge">3</div>
+    </div>
+    <div class="user-pill" onclick="logout()">
+      <span class="user-avatar">👤</span>
+      <div>
+        <div class="uname" id="userNameDisplay">Yükleniyor...</div>
+        <div class="urole" id="userRoleDisplay">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Notification Dropdown -->
+  <div class="notif-dropdown" id="notifPanel">
+    <div class="notif-header">
+      <span>Bildirimler</span>
+      <span style="color:#58a6ff;font-size:12px;cursor:pointer" onclick="markAllRead()">Tümünü Oku</span>
+    </div>
+    <div id="notifList"></div>
+  </div>
+</div>
+
+<!-- ============ MAIN LAYOUT ============ -->
+<div class="main-layout">
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="nav-section">
+      <div class="nav-section-label">Operasyon</div>
+      <div class="nav-item active" data-panel="map" onclick="navTo('map')">
+        <span class="nav-icon">🗺</span> Harita
+      </div>
+      <div class="nav-item" data-panel="fires" onclick="navTo('fires')" id="nav-fires">
+        <span class="nav-icon">🔥</span> Yangınlar
+        <span class="nav-badge" id="fireBadge">0</span>
+      </div>
+      <div class="nav-item" data-panel="teams" onclick="navTo('teams')" id="nav-teams">
+        <span class="nav-icon">🚒</span> Ekipler
+        <span class="nav-badge green">4</span>
+      </div>
+      <div class="nav-item" data-panel="route" onclick="navTo('route')" id="nav-route">
+        <span class="nav-icon">🔀</span> Rota Planlama
+      </div>
+      <div class="nav-item" data-panel="task" onclick="navTo('task')" id="nav-task" style="display:none">
+        <span class="nav-icon">📋</span> Görevim
+      </div>
+    </div>
+
+    <div class="nav-section" id="nav-section-mgmt">
+      <div class="nav-section-label">Yönetim</div>
+      <div class="nav-item" data-panel="mgmt" onclick="navTo('mgmt')" id="nav-mgmt">
+        <span class="nav-icon">⚙️</span> Yönetim
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="system-status">
+        <div style="font-size:10px;color:#6e7681;text-transform:uppercase;margin-bottom:6px">Sistem Durumu</div>
+        <div class="sys-row"><span>Firebase</span><div class="sys-dot"></div></div>
+        <div class="sys-row"><span>Harita Servisi</span><div class="sys-dot"></div></div>
+        <div class="sys-row"><span>GPS Takip</span><div class="sys-dot yellow"></div></div>
+        <div class="sys-row"><span>Sensörler</span><div class="sys-dot red"></div></div>
+      </div>
+      <button onclick="showChangePasswordModal()" style="width:100%;margin-top:10px;padding:7px;background:transparent;border:1px solid #30363d;border-radius:6px;color:#8b949e;font-size:11px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='#58a6ff';this.style.color='#58a6ff'" onmouseout="this.style.borderColor='#30363d';this.style.color='#8b949e'">🔑 Şifremi Değiştir</button>
+    </div>
+  </div>
+
+  <!-- CONTENT AREA -->
+  <div class="content-area">
+
+    <!-- ============ MAP PANEL ============ -->
+    <div class="panel active" id="panel-map">
+      <div class="map-container">
+        <div id="map"></div>
+
+        <!-- Map Controls (left) -->
+        <div class="map-controls">
+          <div class="map-ctrl-card">
+            <h4>Rüzgar Yönü</h4>
+            <div class="wind-selector">
+              <div class="wind-btn" data-dir="N" onclick="setWind('N')">K</div>
+              <div class="wind-btn active" data-dir="NE" onclick="setWind('NE')">KD</div>
+              <div class="wind-btn" data-dir="E" onclick="setWind('E')">D</div>
+              <div class="wind-btn" data-dir="SE" onclick="setWind('SE')">GD</div>
+              <div class="wind-btn" data-dir="S" onclick="setWind('S')">G</div>
+              <div class="wind-btn" data-dir="SW" onclick="setWind('SW')">GB</div>
+              <div class="wind-btn" data-dir="W" onclick="setWind('W')">B</div>
+              <div class="wind-btn" data-dir="NW" onclick="setWind('NW')">KB</div>
+            </div>
+          </div>
+
+          <div class="map-ctrl-card">
+            <h4>Arazi Tipi</h4>
+            <select id="terrainSelect" style="width:100%;padding:5px 8px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;font-size:12px;outline:none">
+              <option value="forest">Orman</option>
+              <option value="urban">Kentsel</option>
+              <option value="field">Tarla</option>
+              <option value="mountain">Dağlık</option>
+            </select>
+          </div>
+
+          <div class="map-ctrl-card" id="mapCtrlButtons">
+            <h4>Kontroller</h4>
+            <button class="ctrl-btn" id="addFireMode" data-active="false" onclick="toggleAddFireMode()">
+              🔥 Yangın Ekle
+            </button>
+            <button class="ctrl-btn danger mt-2" id="simBtn" onclick="toggleSimulation()">
+              ▶ Simülasyonu Başlat
+            </button>
+          </div>
+
+          <div class="map-ctrl-card" style="max-height:200px;overflow:hidden">
+            <h4>Simülasyon Logu</h4>
+            <div class="sim-log" id="simLog">
+              <div class="sim-log-entry info">Simülasyon bekleniyor...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Map Info (right) -->
+        <div class="map-info-panel">
+          <h4>Genel Durum</h4>
+          <div class="info-stat"><span class="ikey">Aktif Yangın</span><span class="ival red" id="infoActiveFires">2</span></div>
+          <div class="info-stat"><span class="ikey">Uygun Ekip</span><span class="ival green" id="infoAvailTeams">2</span></div>
+          <div class="info-stat"><span class="ikey">Görevde</span><span class="ival yellow" id="infoOnDuty">1</span></div>
+          <div class="info-stat"><span class="ikey">Rüzgar</span><span class="ival" id="infoWind">NE 25km/s</span></div>
+          <div class="sep"></div>
+          <h4>Yangın Listesi</h4>
+          <div id="mapFireList">
+            <div class="info-stat"><span class="ikey">F001</span><span class="ival red">Orman 350m</span></div>
+            <div class="info-stat"><span class="ikey">F002</span><span class="ival yellow">Kentsel 180m</span></div>
+          </div>
+        </div>
+
+        <!-- Legend (bottom left) -->
+        <div class="map-legend">
+          <div class="legend-item"><div class="legend-dot" style="background:#e63946"></div>Yangın Noktası</div>
+          <div class="legend-item"><div class="legend-dot" style="background:rgba(230,57,70,0.3);border:1px solid #e63946;width:12px;height:12px;border-radius:50%"></div>Yayılma Alanı</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#3fb950"></div>Uygun Ekip</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#d29922"></div>Görevde Ekip</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#58a6ff"></div>Yolda Ekip</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ FIRES PANEL ============ -->
+    <div class="panel" id="panel-fires">
+      <div class="panel-header">
+        <span style="font-size:22px">🔥</span>
+        <div>
+          <h2>Yangın Takip Paneli</h2>
+          <p>Aktif yangınları izle, ekip gönder, simülasyon çalıştır</p>
+        </div>
+        <div style="margin-left:auto" id="newFireBtnWrapper">
+          <button class="btn btn-primary" onclick="navTo('map');toggleAddFireMode()">+ Yeni Yangın</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="stats-row" id="fireStats"></div>
+        <div id="firesGrid"></div>
+      </div>
+    </div>
+
+    <!-- ============ TEAMS PANEL ============ -->
+    <div class="panel" id="panel-teams">
+      <div class="panel-header">
+        <span style="font-size:22px">🚒</span>
+        <div>
+          <h2>Ekip Yönetimi</h2>
+          <p>Ekip durumları, ekipman takibi ve görev atama</p>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:8px">
+          <button class="btn btn-secondary" onclick="renderTeams()">↻ Yenile</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="stats-row" id="teamStats"></div>
+        <div class="cards-grid" id="teamsGrid"></div>
+      </div>
+    </div>
+
+    <!-- ============ ROUTE PANEL ============ -->
+    <div class="panel" id="panel-route">
+      <div class="panel-header">
+        <span style="font-size:22px">🔀</span>
+        <div>
+          <h2>Rota Planlama</h2>
+          <p>En uygun ekibi bul, güvenli rota hesapla</p>
+        </div>
+      </div>
+      <div class="route-layout">
+        <div class="route-left">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-icon">🎯</div>
+              <div><div class="card-title">Rota Hesapla</div><div class="card-subtitle">Ekip ve yangın seç</div></div>
+            </div>
+            <div class="form-group">
+              <label style="font-size:11px;color:#8b949e;text-transform:uppercase;margin-bottom:6px;display:block">Yangın Seç</label>
+              <select id="routeFireSelect" style="width:100%;padding:9px 12px;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#e6edf3;font-size:13px;outline:none">
+                <option>Yükleniyor...</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-top:12px">
+              <label style="font-size:11px;color:#8b949e;text-transform:uppercase;margin-bottom:6px;display:block">Ekip Seç</label>
+              <select id="routeTeamSelect" style="width:100%;padding:9px 12px;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#e6edf3;font-size:13px;outline:none">
+                <option>Yükleniyor...</option>
+              </select>
+              <div id="routeTeamLabel" style="display:none;padding:9px 12px;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#58a6ff;font-size:13px"></div>
+            </div>
+            <button class="btn btn-primary btn-block mt-3" onclick="calcRoute()">🔍 Rota Hesapla</button>
+          </div>
+
+          <div id="routeResult"></div>
+
+          <div class="card mt-3">
+            <div class="card-header">
+              <div class="card-icon">📊</div>
+              <div><div class="card-title">Güvenli Rota Kriterleri</div></div>
+            </div>
+            <div class="info-row"><span class="key">Yangına Uzaklık</span><span class="val" style="color:#3fb950">Değerlendiriliyor</span></div>
+            <div class="info-row"><span class="key">Asfalt Yol</span><span class="val" style="color:#3fb950">Tercih edilir</span></div>
+            <div class="info-row"><span class="key">Ormanlık Alan</span><span class="val" style="color:#d29922">Dikkat</span></div>
+            <div class="info-row"><span class="key">Kapalı Yol</span><span class="val" style="color:#e63946">Önlenecek</span></div>
+            <div class="info-row"><span class="key">Algoritma</span><span class="val">A* + Haversine</span></div>
+          </div>
+        </div>
+
+        <div class="route-map">
+          <div id="routeMap"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ MANAGEMENT PANEL ============ -->
+    <div class="panel" id="panel-mgmt">
+      <div class="panel-header">
+        <span style="font-size:22px">⚙️</span>
+        <div><h2>Yönetim Paneli</h2><p>Kullanıcılar, sistem logları ve ayarlar</p></div>
+      </div>
+      <div class="panel-body">
+        <div class="mgmt-grid">
+          <!-- Users -->
+          <div class="mgmt-section">
+            <div class="mgmt-section-header">
+              <h3>👤 Kullanıcılar</h3>
+              <button class="btn btn-primary btn-sm" onclick="showAddUserModal()">+ Ekle</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Ad Soyad</th>
+                    <th>Rol</th>
+                    <th>Kullanıcı Adı</th>
+                    <th>E-posta</th>
+                    <th>Durum</th>
+                    <th>İşlem</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Logs -->
+          <div class="mgmt-section">
+            <div class="mgmt-section-header">
+              <h3>📋 Sistem Logları</h3>
+              <button class="btn btn-secondary btn-sm" onclick="renderMgmt()">↻</button>
+            </div>
+            <div style="padding:12px;max-height:300px;overflow-y:auto" id="logsContainer"></div>
+          </div>
+
+          <!-- Team management -->
+          <div class="mgmt-section" style="grid-column:1/-1">
+            <div class="mgmt-section-header">
+              <h3>🚒 Ekip Yönetimi</h3>
+              <button class="btn btn-primary btn-sm" onclick="showAddTeamModal()">+ Yeni Ekip</button>
+            </div>
+            <div id="teamsMgmtContainer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ TASK PANEL (Ekip Üyesi) ============ -->
+    <div class="panel" id="panel-task">
+      <div class="panel-header">
+        <span style="font-size:22px">📋</span>
+        <div>
+          <h2>Görevim</h2>
+          <p>Mevcut görev durumu ve ekip bilgisi</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div id="taskContent" style="max-width:700px;margin:0 auto"></div>
+      </div>
+    </div>
+
+  </div><!-- /content-area -->
+</div><!-- /main-layout -->
+
+<!-- ============ ADD USER MODAL ============ -->
+<div class="modal-overlay" id="addUserModal">
+  <div class="modal">
+    <h3>Yeni Kullanıcı Ekle</h3>
+    <div class="form-group">
+      <label>Ad Soyad</label>
+      <input type="text" id="newUserName" placeholder="Ahmet Yılmaz">
+    </div>
+    <div class="form-group">
+      <label>Rol</label>
+      <select id="newUserRole">
+        <option value="merkez">Merkez Operatörü</option>
+        <option value="sef">İtfaiye Şefi</option>
+        <option value="ekip">Ekip Üyesi</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Kullanıcı Adı</label>
+      <input type="text" id="newUserUsername" placeholder="ahmet_yilmaz">
+    </div>
+    <div class="form-group">
+      <label>E-posta</label>
+      <input type="text" id="newUserEmail" placeholder="ahmet@firecoord.tr">
+    </div>
+    <div class="form-group">
+      <label>Şifre</label>
+      <input type="password" id="newUserPassword" placeholder="Giriş şifresi">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('addUserModal')">İptal</button>
+      <button class="btn btn-primary" onclick="saveUser()">Kaydet</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ ADD TEAM MODAL ============ -->
+<div class="modal-overlay" id="addTeamModal">
+  <div class="modal" style="max-width:480px">
+    <h3>Yeni Ekip Oluştur</h3>
+    <div class="form-group">
+      <label>Ekip Adı</label>
+      <input type="text" id="newTeamName" placeholder="Ekip Epsilon">
+    </div>
+    <div class="form-group">
+      <label>Araç Seç</label>
+      <select id="newTeamVehicle" style="width:100%;padding:9px 12px;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#e6edf3;font-size:13px;outline:none">
+        <option value="">-- Araç Seçin --</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Şef Seç <span style="color:#6e7681;font-size:10px">(İsteğe bağlı — ekipsiz şefler listelenir)</span></label>
+      <select id="newTeamChiefSelect" style="width:100%;padding:9px 12px;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#e6edf3;font-size:13px;outline:none">
+        <option value="">-- Şef Seçin --</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Ekip Üyeleri <span style="color:#6e7681;font-size:10px">(Ekipsiz üyeler listelenir)</span></label>
+      <div id="newTeamMembersContainer" style="background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:8px 12px;max-height:160px;overflow-y:auto">
+        <div style="color:#6e7681;font-size:12px">Yükleniyor...</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('addTeamModal')">İptal</button>
+      <button class="btn btn-primary" onclick="saveTeam()">Ekip Oluştur</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ DISPATCH TEAM MODAL ============ -->
+<div class="modal-overlay" id="dispatchModal">
+  <div class="modal" style="max-width:460px">
+    <h3>🚒 Ekip Gönder — <span id="dispatchFireLabel" style="color:#e63946"></span></h3>
+    <input type="hidden" id="dispatchFireIdVal">
+    <div class="form-group">
+      <label>Ekip Seç <span style="color:#6e7681;font-size:10px">(⭐ = önerilen, mesafe ve su kapasitesine göre)</span></label>
+      <select id="dispatchTeamSelect" onchange="refreshDispatchInfo()"
+        style="width:100%;padding:9px 12px;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#e6edf3;font-size:13px;outline:none">
+        <option>Yükleniyor...</option>
+      </select>
+    </div>
+    <div id="dispatchTeamInfo"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('dispatchModal')">İptal</button>
+      <button class="btn btn-primary" onclick="saveDispatch()">🚒 Ekibi Gönder</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ CHANGE PASSWORD MODAL ============ -->
+<div class="modal-overlay" id="changePasswordModal">
+  <div class="modal">
+    <h3>🔑 Şifremi Değiştir</h3>
+    <div class="form-group">
+      <label>Mevcut Şifre</label>
+      <input type="password" id="cpCurrentPass" placeholder="Mevcut şifreniz">
+    </div>
+    <div class="form-group">
+      <label>Yeni Şifre</label>
+      <input type="password" id="cpNewPass" placeholder="Yeni şifre">
+    </div>
+    <div class="form-group">
+      <label>Yeni Şifre (Tekrar)</label>
+      <input type="password" id="cpNewPass2" placeholder="Yeni şifreyi tekrar girin">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('changePasswordModal')">İptal</button>
+      <button class="btn btn-primary" onclick="saveChangePassword()">Değiştir</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ EDIT USER MODAL ============ -->
+<div class="modal-overlay" id="editUserModal">
+  <div class="modal">
+    <h3>Kullanıcıyı Düzenle</h3>
+    <input type="hidden" id="editUserId">
+    <div class="form-group">
+      <label>Ad Soyad</label>
+      <input type="text" id="editUserName" placeholder="Ad Soyad">
+    </div>
+    <div class="form-group">
+      <label>Rol</label>
+      <select id="editUserRole">
+        <option value="merkez">Merkez Operatörü</option>
+        <option value="sef">İtfaiye Şefi</option>
+        <option value="ekip">Ekip Üyesi</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Kullanıcı Adı</label>
+      <input type="text" id="editUserUsername" placeholder="kullanici_adi">
+    </div>
+    <div class="form-group">
+      <label>E-posta</label>
+      <input type="text" id="editUserEmail" placeholder="eposta@firecoord.tr">
+    </div>
+    <div class="form-group">
+      <label>Yeni Şifre <span style="color:#6e7681;font-size:10px">(Boş bırakılırsa değişmez)</span></label>
+      <input type="password" id="editUserPassword" placeholder="Yeni şifre">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('editUserModal')">İptal</button>
+      <button class="btn btn-primary" onclick="saveEditUser()">Kaydet</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ ASSIGN CHIEF MODAL ============ -->
+<div class="modal-overlay" id="assignChiefModal">
+  <div class="modal" style="max-width:440px">
+    <h3>👨‍🚒 Şef Görevlendir — <span id="assignChiefFireLabel" style="color:#e63946"></span></h3>
+    <input type="hidden" id="assignChiefFireId">
+    <div class="form-group">
+      <label>Şef Seç <span style="color:#6e7681;font-size:10px">(Sistemdeki aktif itfaiye şefleri)</span></label>
+      <select id="assignChiefSelect"
+        style="width:100%;padding:9px 12px;background:#0d1117;border:1px solid #30363d;border-radius:7px;color:#e6edf3;font-size:13px;outline:none">
+        <option value="">-- Şef Seçin --</option>
+      </select>
+    </div>
+    <div id="assignChiefInfo"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('assignChiefModal')">İptal</button>
+      <button class="btn btn-primary" onclick="saveAssignChief()">👨‍🚒 Görevlendir</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ EQUIPMENT MODAL ============ -->
+<div class="modal-overlay" id="equipmentModal">
+  <div class="modal" style="max-width:400px">
+    <h3>🔧 Ekipman Yönetimi — <span id="equipModalTeamName" style="color:#58a6ff"></span></h3>
+    <input type="hidden" id="equipModalTeamId">
+    <div class="form-group">
+      <label>Mevcut Ekipmanlar</label>
+      <div id="equipCheckboxes" style="background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:10px 12px">
+        <div style="color:#6e7681;font-size:12px">Yükleniyor...</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('equipmentModal')">İptal</button>
+      <button class="btn btn-primary" onclick="saveEquipment()">💾 Kaydet</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ ADD MEMBER MODAL ============ -->
+<div class="modal-overlay" id="addMemberModal">
+  <div class="modal">
+    <h3>Üye Ekle — <span id="addMemberTeamName" style="color:#58a6ff"></span></h3>
+    <input type="hidden" id="addMemberTeamId">
+    <div class="form-group">
+      <label>Kullanıcı</label>
+      <select id="addMemberSelect">
+        <option value="">-- Kullanıcı Seç --</option>
+      </select>
+    </div>
+    <p style="font-size:11px;color:#6e7681;margin-top:-8px">Yalnızca henüz bir ekibe atanmamış kullanıcılar listelenir.</p>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('addMemberModal')">İptal</button>
+      <button class="btn btn-primary" onclick="saveMember()">Ekle</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/firebase.js"></script>
+<script src="js/data.js"></script>
+<script src="js/roles.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

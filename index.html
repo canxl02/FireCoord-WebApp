@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FireCoord - Giriş</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #0a0e1a;
+      color: #e6edf3;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-image: radial-gradient(ellipse at 50% 30%, #1a0505 0%, #0a0e1a 65%);
+      overflow: hidden;
+    }
+    .particles {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .particle {
+      position: absolute;
+      width: 3px; height: 3px;
+      background: #e63946;
+      border-radius: 50%;
+      opacity: 0;
+      animation: float linear infinite;
+    }
+    @keyframes float {
+      0%   { transform: translateY(100vh) scale(0); opacity: 0; }
+      10%  { opacity: 0.6; }
+      90%  { opacity: 0.4; }
+      100% { transform: translateY(-20px) scale(1); opacity: 0; }
+    }
+    .login-wrapper {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 24px;
+    }
+    .brand {
+      text-align: center;
+    }
+    .brand-icon {
+      font-size: 56px;
+      display: block;
+      filter: drop-shadow(0 0 20px #e63946);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { filter: drop-shadow(0 0 20px #e63946); }
+      50% { filter: drop-shadow(0 0 35px #ff6b6b); }
+    }
+    .brand h1 {
+      font-size: 32px;
+      font-weight: 700;
+      color: #e63946;
+      letter-spacing: 3px;
+      margin-top: 8px;
+    }
+    .brand p {
+      color: #8b949e;
+      font-size: 13px;
+      margin-top: 4px;
+      letter-spacing: 1px;
+    }
+    .login-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 16px;
+      padding: 40px;
+      width: 380px;
+      box-shadow: 0 0 80px rgba(230, 57, 70, 0.12), 0 24px 64px rgba(0,0,0,0.4);
+    }
+    .login-card h2 {
+      font-size: 18px;
+      color: #e6edf3;
+      margin-bottom: 24px;
+      font-weight: 500;
+    }
+    .form-group {
+      margin-bottom: 18px;
+    }
+    label {
+      display: block;
+      color: #8b949e;
+      font-size: 11px;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+    .input-wrap {
+      position: relative;
+    }
+    .input-wrap .icon {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 16px;
+    }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      padding: 11px 12px 11px 38px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      color: #e6edf3;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    input:focus {
+      border-color: #e63946;
+      box-shadow: 0 0 0 3px rgba(230, 57, 70, 0.15);
+    }
+    .btn-login {
+      width: 100%;
+      padding: 13px;
+      background: linear-gradient(135deg, #e63946, #c1121f);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-top: 8px;
+      letter-spacing: 0.5px;
+    }
+    .btn-login:hover {
+      background: linear-gradient(135deg, #ff4757, #e63946);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 20px rgba(230, 57, 70, 0.4);
+    }
+    .btn-login:active { transform: translateY(0); }
+    .error-msg {
+      color: #f85149;
+      font-size: 12px;
+      margin-top: 10px;
+      display: none;
+      text-align: center;
+      padding: 8px;
+      background: rgba(248, 81, 73, 0.1);
+      border-radius: 6px;
+      border: 1px solid rgba(248, 81, 73, 0.2);
+    }
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 20px 0 16px;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #30363d;
+    }
+    .divider span { color: #8b949e; font-size: 11px; }
+    .quick-logins {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+    .quick-btn {
+      padding: 10px 6px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      color: #8b949e;
+      font-size: 11px;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.2s;
+    }
+    .quick-btn:hover {
+      border-color: #e63946;
+      color: #e63946;
+      background: rgba(230, 57, 70, 0.08);
+    }
+    .quick-btn .qicon { font-size: 18px; display: block; margin-bottom: 4px; }
+    .quick-btn .qrole { font-weight: 600; font-size: 12px; display: block; }
+    .quick-btn .qcred { color: #6e7681; font-size: 10px; }
+    .status-bar {
+      display: flex;
+      gap: 20px;
+      color: #6e7681;
+      font-size: 11px;
+    }
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .status-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #3fb950;
+      animation: blink 2s ease-in-out infinite;
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+  </style>
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+</head>
+<body>
+  <div class="particles" id="particles"></div>
+
+  <div class="login-wrapper">
+    <div class="brand">
+      <span class="brand-icon">🔥</span>
+      <h1>FIRECOORD</h1>
+      <p>Yangın Koordinasyon ve Takip Sistemi</p>
+    </div>
+
+    <div class="login-card">
+      <h2>Sisteme Giriş</h2>
+      <div class="form-group">
+        <label>Kullanıcı Adı</label>
+        <div class="input-wrap">
+          <span class="icon">👤</span>
+          <input type="text" id="username" placeholder="kullanici_adi" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Şifre</label>
+        <div class="input-wrap">
+          <span class="icon">🔒</span>
+          <input type="password" id="password" placeholder="••••••••" />
+        </div>
+      </div>
+      <div class="error-msg" id="errorMsg">Kullanıcı adı veya şifre hatalı!</div>
+      <button class="btn-login" onclick="doLogin()">Giriş Yap →</button>
+
+      <div class="divider"><span>HIZLI GİRİŞ</span></div>
+      <div class="quick-logins">
+        <div class="quick-btn" onclick="quickLogin('admin','1234')">
+          <span class="qicon">🏢</span>
+          <span class="qrole">Merkez</span>
+          <span class="qcred">admin / 1234</span>
+        </div>
+        <div class="quick-btn" onclick="quickLogin('ahmet','1234')">
+          <span class="qicon">👨‍🚒</span>
+          <span class="qrole">İtf. Şef</span>
+          <span class="qcred">ahmet / 1234</span>
+        </div>
+        <div class="quick-btn" onclick="quickLogin('ekip1','1234')">
+          <span class="qicon">🧑‍🤝‍🧑</span>
+          <span class="qrole">Ekip</span>
+          <span class="qcred">ekip1 / 1234</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="status-bar">
+      <div class="status-item">
+        <div class="status-dot"></div>
+        <span>Sistem Aktif</span>
+      </div>
+      <div class="status-item">
+        <div class="status-dot" style="background:#e63946"></div>
+        <span>2 Aktif Yangın</span>
+      </div>
+      <div class="status-item">
+        <div class="status-dot" style="background:#d29922"></div>
+        <span>3 Ekip Uygun</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Firebase başlatma
+    firebase.initializeApp({
+      apiKey: "AIzaSyBdaHQtzyi097rtIH13EScBy17IWNMBLVk",
+      authDomain: "firecoord-2da06.firebaseapp.com",
+      databaseURL: "https://firecoord-2da06-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "firecoord-2da06",
+      storageBucket: "firecoord-2da06.firebasestorage.app",
+      messagingSenderId: "988925603140"
+    });
+    const loginDb = firebase.database();
+
+    function quickLogin(u, p) {
+      document.getElementById('username').value = u;
+      document.getElementById('password').value = p;
+      doLogin();
+    }
+
+    function doLogin() {
+      const u = document.getElementById('username').value.trim();
+      const p = document.getElementById('password').value;
+
+      loginDb.ref('users').once('value', snap => {
+        const val = snap.val();
+        const users = val ? Object.values(val) : [];
+        const user = users.find(x => x.username === u && x.password === p && x.active !== false);
+
+        if (user) {
+          sessionStorage.setItem('fc_user', JSON.stringify({
+            id: user.id, name: user.name, role: user.role,
+            username: user.username, email: user.email || '',
+            teamId: user.teamId || null
+          }));
+          window.location.href = 'dashboard.html';
+        } else {
+          const el = document.getElementById('errorMsg');
+          el.style.display = 'block';
+          setTimeout(() => el.style.display = 'none', 3000);
+        }
+      });
+    }
+
+    document.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+    // particles animation
+    const container = document.getElementById('particles');
+    for (let i = 0; i < 25; i++) {
+      const p = document.createElement('div');
+      p.className = 'particle';
+      p.style.left = Math.random() * 100 + '%';
+      p.style.animationDuration = (4 + Math.random() * 8) + 's';
+      p.style.animationDelay = (Math.random() * 8) + 's';
+      p.style.width = p.style.height = (2 + Math.random() * 3) + 'px';
+      container.appendChild(p);
+    }
+  </script>
+</body>
+</html>

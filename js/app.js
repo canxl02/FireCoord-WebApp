@@ -43,6 +43,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initFirebaseListeners();
   startTeamMovement();
   addLog('Sistem başlatıldı. Firebase bağlantısı kuruldu.', 'success');
+  OfflineCacheManager.init();
+  setInterval(() => OfflineCacheManager.cacheState(), 30000);
 });
 
 // ---- CLOCK ----
@@ -232,8 +234,9 @@ function addNewFire(lat, lng) {
     assignedTeams: [],
     spread_rate: 8
   };
-  dbAddFire(newFire);
-  dbAddNotification(`Yeni yangın eklendi: ${id} (${lat.toFixed(4)}, ${lng.toFixed(4)})`, 'warning');
+  OfflineCacheManager.wrapWrite('addFire', newFire, () => dbAddFire(newFire));
+  const _notifText = `Yeni yangın eklendi: ${id} (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+  OfflineCacheManager.wrapWrite('addNotif', { text: _notifText, type: 'warning' }, () => dbAddNotification(_notifText, 'warning'));
   addLog('Yeni yangın eklendi: ' + id, 'warn');
   toggleAddFireMode();
 }
@@ -570,8 +573,9 @@ function saveDispatch() {
   const teamId = document.getElementById('dispatchTeamSelect').value;
   if (!teamId) { alert('Bir ekip seçin!'); return; }
   const team = AppState.teams.find(t => t.id === teamId);
-  dbAssignTeam(teamId, fireId);
-  dbAddNotification(`${team?.name} ${fireId} yangınına gönderildi.`, 'info');
+  OfflineCacheManager.wrapWrite('assignTeam', { teamId, fireId }, () => dbAssignTeam(teamId, fireId));
+  const _notifText = `${team?.name} ${fireId} yangınına gönderildi.`;
+  OfflineCacheManager.wrapWrite('addNotif', { text: _notifText, type: 'info' }, () => dbAddNotification(_notifText, 'info'));
   addLog(`${team?.name} → ${fireId} yangınına yönlendirildi`, 'warn');
   closeModal('dispatchModal');
 }
@@ -581,10 +585,12 @@ function extinguishFire(fireId) {
   if (!fire) return;
   fire.assignedTeams.forEach(tid => {
     const team = AppState.teams.find(t => t.id === tid);
-    if (team) dbUnassignTeam(tid, fireId, Math.max(10, team.water - 30));
+    const water = team ? Math.max(10, team.water - 30) : 10;
+    OfflineCacheManager.wrapWrite('unassignTeam', { teamId: tid, fireId, water }, () => dbUnassignTeam(tid, fireId, water));
   });
-  dbExtinguishFire(fireId);
-  dbAddNotification(`${fireId} yangını söndürüldü!`, 'success');
+  OfflineCacheManager.wrapWrite('extinguishFire', { fireId }, () => dbExtinguishFire(fireId));
+  const _notifText = `${fireId} yangını söndürüldü!`;
+  OfflineCacheManager.wrapWrite('addNotif', { text: _notifText, type: 'success' }, () => dbAddNotification(_notifText, 'success'));
   addLog(fireId + ' yangını söndürüldü!', 'success');
 }
 
@@ -656,8 +662,9 @@ function submitReport() {
     durationMin
   };
 
-  dbSubmitReport(report);
-  dbAddNotification(`📋 ${fire.id} yangın söndürme raporu ${chief.name} tarafından onaylandı.`, 'success');
+  OfflineCacheManager.wrapWrite('submitReport', report, () => dbSubmitReport(report));
+  const _notifText = `📋 ${fire.id} yangın söndürme raporu ${chief.name} tarafından onaylandı.`;
+  OfflineCacheManager.wrapWrite('addNotif', { text: _notifText, type: 'success' }, () => dbAddNotification(_notifText, 'success'));
   addLog(`${fire.id} raporu onaylandı ve Merkez'e gönderildi — ${chief.name}`, 'success');
   closeModal('reportModal');
 }
@@ -779,7 +786,7 @@ function updateTeamWater(teamId) {
   if (val === null) return;
   const n = parseInt(val);
   if (!isNaN(n) && n >= 0 && n <= 100) {
-    dbUpdateTeamWater(teamId, n);
+    OfflineCacheManager.wrapWrite('updateWater', { teamId, water: n }, () => dbUpdateTeamWater(teamId, n));
     addLog(`${team.name} su seviyesi güncellendi: %${n}`, 'info');
   }
 }
@@ -787,7 +794,8 @@ function updateTeamWater(teamId) {
 function completeTask(teamId) {
   const team = AppState.teams.find(t => t.id === teamId);
   if (!team) return;
-  dbUnassignTeam(teamId, team.assignedFire, Math.max(10, team.water - 20));
+  const water = Math.max(10, team.water - 20);
+  OfflineCacheManager.wrapWrite('unassignTeam', { teamId, fireId: team.assignedFire, water }, () => dbUnassignTeam(teamId, team.assignedFire, water));
   addLog(`${team.name} görevi tamamladı, uygun duruma geçti`, 'success');
 }
 
@@ -811,6 +819,75 @@ function renderRoute() {
     sourceTeams.map(t =>
       `<option value="${t.id}">${t.name} [${statusLabel(t.status)}] Su:%${t.water}</option>`
     ).join('');
+}
+
+// ---- SAFE PATH GENERATION ----
+// Aktif yangın tehlike bölgelerini (radius + buffer) aşmak için detour noktaları hesaplar.
+// Geri dönüş: { waypoints, avoided, zones } veya rota güvenli ise null.
+function generateSafePath(teamLat, teamLng, fireLat, fireLng, targetFireId) {
+  const SAFETY_BUFFER_KM = 0.4;  // fire radius üzerine eklenen güvenlik payı (km)
+  const MIN_EXCLUSION_KM = 0.25; // minimum dışlama yarıçapı
+
+  const dangerFires = AppState.fires.filter(f =>
+    (f.status === 'active' || f.status === 'pending_report') && f.id !== targetFireId
+  );
+  if (dangerFires.length === 0) return null;
+
+  // Yerel kartezyen koordinat dönüşümleri (km, ekip konumu referans nokta)
+  const cosLat = Math.cos(teamLat * Math.PI / 180);
+  const toLocal  = (lat, lng) => ({ x: (lng - teamLng) * cosLat * 111.32, y: (lat - teamLat) * 111.32 });
+  const fromLocal = (x, y)    => [teamLat + y / 111.32, teamLng + x / (111.32 * cosLat)];
+
+  const B = toLocal(fireLat, fireLng);
+  const ABlen = Math.hypot(B.x, B.y);
+  if (ABlen < 0.01) return null;
+  const ABu = { x: B.x / ABlen, y: B.y / ABlen };
+
+  const bypasses = [];
+
+  dangerFires.forEach(fire => {
+    const C = toLocal(fire.lat, fire.lng);
+    const safeR = Math.max(MIN_EXCLUSION_KM, fire.radius / 1000 + SAFETY_BUFFER_KM);
+
+    // C noktasının AB doğrusuna olan projeksiyon t'si (0..ABlen arası sıkıştırılır)
+    const t = Math.max(0, Math.min(ABlen, C.x * ABu.x + C.y * ABu.y));
+    const Px = ABu.x * t, Py = ABu.y * t;
+    const dist = Math.hypot(C.x - Px, C.y - Py);
+
+    if (dist < safeR) {
+      // Yangından uzağa doğru dik yön hesapla
+      const perpLen = dist < 0.001 ? 1 : dist;
+      const px = (Px - C.x) / perpLen;
+      const py = (Py - C.y) / perpLen;
+      const bypass = fromLocal(Px + px * (safeR + 0.25), Py + py * (safeR + 0.25));
+      bypasses.push({ pt: bypass, t, fireId: fire.id, fireLat: fire.lat, fireLng: fire.lng, safeR });
+    }
+  });
+
+  if (bypasses.length === 0) return null;
+
+  bypasses.sort((a, b) => a.t - b.t); // rota boyunca sırala
+
+  return {
+    waypoints: bypasses.map(b => b.pt),
+    avoided:   bypasses.map(b => b.fireId),
+    zones:     bypasses.map(b => ({ lat: b.fireLat, lng: b.fireLng, radius: b.safeR * 1000 }))
+  };
+}
+
+// ---- OSRM MULTI-WAYPOINT ROUTING ----
+async function fetchOSRMRouteMulti(latLngArray) {
+  const coords = latLngArray.map(([lat, lng]) => `${lng},${lat}`).join(';');
+  const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson&steps=true&annotations=false`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (data.code === 'Ok' && data.routes && data.routes.length > 0) return data.routes[0];
+  } catch (e) {
+    console.warn('OSRM multi-waypoint hatası:', e.message);
+  }
+  return null;
 }
 
 // ---- OSRM REAL ROAD ROUTING ----
@@ -867,36 +944,68 @@ async function calcRoute() {
 
   const score = teamScore(team, fire);
 
-  // Yükleniyor göster
+  // Güvenli rota analizi
+  const safeResult = generateSafePath(team.lat, team.lng, fire.lat, fire.lng, fireId);
+  const hasDetour  = safeResult && safeResult.waypoints.length > 0;
+
   document.getElementById('routeResult').innerHTML = `
     <div class="card mt-3" style="text-align:center;padding:28px;color:#8b949e">
-      <div style="font-size:28px;margin-bottom:8px">🗺</div>
-      <div>Gerçek yol rotası hesaplanıyor...</div>
-      <div style="font-size:11px;margin-top:4px">OSRM açık kaynak yönlendirme motoru</div>
+      <div style="font-size:28px;margin-bottom:8px">${hasDetour ? '⚠️' : '🗺'}</div>
+      <div>${hasDetour ? 'Güvenli rota hesaplanıyor — tehlike bölgeleri atlanıyor...' : 'Gerçek yol rotası hesaplanıyor...'}</div>
+      <div style="font-size:11px;margin-top:4px">${hasDetour ? safeResult.avoided.length + ' aktif yangın güzergahtan çıkarıldı' : 'OSRM açık kaynak yönlendirme motoru'}</div>
     </div>`;
 
-  // Rota haritasını temizle ve yüklenme göster
-  drawRouteOnMap(routeMap, team, fire, null);
+  drawRouteOnMap(routeMap, team, fire, null, null);
 
-  // OSRM'den gerçek yol rotası al
-  const osrmRoute = await fetchOSRMRoute(team.lat, team.lng, fire.lat, fire.lng);
+  // Çok noktalı rota (detour varsa) ya da tek segment
+  let osrmRoute;
+  if (hasDetour) {
+    const allWpts = [[team.lat, team.lng], ...safeResult.waypoints, [fire.lat, fire.lng]];
+    osrmRoute = await fetchOSRMRouteMulti(allWpts);
+    if (!osrmRoute) osrmRoute = await fetchOSRMRoute(team.lat, team.lng, fire.lat, fire.lng);
+  } else {
+    osrmRoute = await fetchOSRMRoute(team.lat, team.lng, fire.lat, fire.lng);
+  }
 
   let distKm, etaMin, routeCoords, routeSource;
-
   if (osrmRoute) {
-    distKm = (osrmRoute.distance / 1000).toFixed(2);
-    etaMin = Math.round(osrmRoute.duration / 60);
+    distKm     = (osrmRoute.distance / 1000).toFixed(2);
+    etaMin     = Math.round(osrmRoute.duration / 60);
     routeCoords = geojsonToLatLng(osrmRoute.geometry.coordinates);
-    routeSource = 'OSRM (Gerçek Yol)';
+    routeSource = hasDetour ? 'OSRM (Güvenli Rota)' : 'OSRM (Gerçek Yol)';
   } else {
-    // Fallback: düz çizgi + uyarı
-    distKm = haversine(team.lat, team.lng, fire.lat, fire.lng).toFixed(2);
-    etaMin = team.speed > 0 ? Math.round((distKm / team.speed) * 60) : 0;
+    distKm     = haversine(team.lat, team.lng, fire.lat, fire.lng).toFixed(2);
+    etaMin     = team.speed > 0 ? Math.round((distKm / team.speed) * 60) : 0;
     routeCoords = [[team.lat, team.lng], [fire.lat, fire.lng]];
     routeSource = 'Düz Çizgi (İnternet yok)';
   }
 
-  const stepsHTML = osrmRoute ? buildStepsHTML(osrmRoute.legs) : '';
+  const stepsHTML    = osrmRoute ? buildStepsHTML(osrmRoute.legs) : '';
+  const routeColor   = hasDetour ? '#ff9944' : (osrmRoute ? '#3fb950' : '#d29922');
+
+  const safeInfoHTML = hasDetour
+    ? `<div class="safe-path-info detour">
+        <div>
+          <div style="font-weight:600;margin-bottom:4px">⚠️ Tehlike Bölgeleri Atlandı — Güvenli Rota Uygulandı</div>
+          <div style="opacity:0.9">${safeResult.avoided.length} aktif yangın güzergahtan çıkarıldı. Mesafe ve süre biraz artabilir.</div>
+          <div class="safe-path-avoided">${safeResult.avoided.map(id => `<span class="avoided-tag">🔥 ${id}</span>`).join('')}</div>
+        </div>
+      </div>`
+    : `<div class="safe-path-info safe">✅ Güvenli Rota — Aktif yangın yayılım bölgesi geçilmiyor</div>`;
+
+  const detourSteps = hasDetour
+    ? safeResult.avoided.map(avId => `
+      <div class="route-step">
+        <div class="step-line">
+          <div class="step-dot" style="background:#ff9944"></div>
+          <div class="step-connector" style="background:#ff9944;opacity:0.4"></div>
+        </div>
+        <div class="step-info">
+          <div class="step-title" style="color:#ff9944">⚠️ ${avId} — Detour uygulandı</div>
+          <div class="step-detail">Yangın yayılım bölgesi güvenli şekilde aşıldı</div>
+        </div>
+      </div>`).join('')
+    : '';
 
   document.getElementById('routeResult').innerHTML = `
     <div class="card mt-3">
@@ -904,9 +1013,11 @@ async function calcRoute() {
         <div class="card-icon">🗺</div>
         <div>
           <div class="card-title">Rota Hesaplandı</div>
-          <div class="card-subtitle">${team.name} → ${fire.id} · <span style="color:${osrmRoute ? '#3fb950' : '#d29922'}">${routeSource}</span></div>
+          <div class="card-subtitle">${team.name} → ${fire.id} · <span style="color:${routeColor}">${routeSource}</span></div>
         </div>
       </div>
+
+      ${safeInfoHTML}
 
       <div class="route-step">
         <div class="step-line"><div class="step-dot blue"></div><div class="step-connector"></div></div>
@@ -915,6 +1026,7 @@ async function calcRoute() {
           <div class="step-detail">${team.lat.toFixed(4)}, ${team.lng.toFixed(4)} · Su: %${team.water} · ${team.personnel} personel</div>
         </div>
       </div>
+      ${detourSteps}
       <div class="route-step">
         <div class="step-line"><div class="step-dot"></div></div>
         <div class="step-info">
@@ -927,6 +1039,7 @@ async function calcRoute() {
       <div class="info-row"><span class="key">Yol Mesafesi</span><span class="val">${distKm} km</span></div>
       <div class="info-row"><span class="key">Tahmini Varış Süresi</span><span class="val" style="color:#3fb950">${etaMin} dakika</span></div>
       <div class="info-row"><span class="key">Ekip Uygunluk Skoru</span><span class="val" style="color:#58a6ff">%${Math.round(score * 100)}</span></div>
+      ${hasDetour ? `<div class="info-row"><span class="key">Güvenlik Seviyesi</span><span class="val" style="color:#3fb950">Maksimum — Tehlike önlendi</span></div>` : ''}
 
       <div class="sep"></div>
       <div style="font-size:11px;color:#6e7681;margin-bottom:6px">SKOR ANALİZİ</div>
@@ -942,26 +1055,47 @@ async function calcRoute() {
       </div>
     </div>`;
 
-  // Rota haritasını güncelle
-  drawRouteOnMap(routeMap, team, fire, routeCoords);
+  drawRouteOnMap(routeMap, team, fire, routeCoords, safeResult);
 
-  // Aktif rota koordinatlarını sakla (ana harita için)
   AppState._lastRouteCoords = routeCoords;
   AppState._lastRouteTeamId = team.id;
   AppState._lastRouteFireId = fire.id;
 }
 
-function drawRouteOnMap(targetMap, team, fire, routeCoords) {
+function drawRouteOnMap(targetMap, team, fire, routeCoords, safeResult) {
   if (!targetMap) return;
 
-  // Mevcut katmanları temizle (tile layer hariç)
   targetMap.eachLayer(l => {
-    if (l instanceof L.Marker || l instanceof L.Polyline || l instanceof L.Circle) {
+    if (l instanceof L.Marker || l instanceof L.Polyline || l instanceof L.Circle || l instanceof L.CircleMarker) {
       l.remove();
     }
   });
 
-  if (!routeCoords) return; // sadece temizle
+  if (!routeCoords) return;
+
+  const hasDetour = safeResult && safeResult.waypoints && safeResult.waypoints.length > 0;
+
+  // Tehlike bölgelerini önce çiz (arkada kalsın)
+  if (safeResult && safeResult.zones) {
+    safeResult.zones.forEach(zone => {
+      L.circle([zone.lat, zone.lng], {
+        color: '#ff7700', fillColor: '#ff7700', fillOpacity: 0.07,
+        radius: zone.radius, weight: 1.5, dashArray: '6 4'
+      }).addTo(targetMap);
+      L.circleMarker([zone.lat, zone.lng], {
+        radius: 8, color: '#ff7700', fillColor: '#ff7700', fillOpacity: 0.85, weight: 2
+      }).bindTooltip('⚠️ Tehlike Bölgesi', { permanent: false, direction: 'top' }).addTo(targetMap);
+    });
+  }
+
+  // Detour waypoint'leri
+  if (safeResult && safeResult.waypoints) {
+    safeResult.waypoints.forEach((wp, i) => {
+      L.circleMarker(wp, {
+        radius: 6, color: '#ff9944', fillColor: '#ffcc88', fillOpacity: 1, weight: 2
+      }).bindTooltip(`Detour ${i + 1}`, { permanent: false }).addTo(targetMap);
+    });
+  }
 
   // Ekip markeri
   L.marker([team.lat, team.lng], { icon: teamIcons[team.status] || teamIcons.available })
@@ -969,27 +1103,24 @@ function drawRouteOnMap(targetMap, team, fire, routeCoords) {
     .addTo(targetMap)
     .openPopup();
 
-  // Yangın markeri
+  // Yangın markeri ve yayılma dairesi
   L.marker([fire.lat, fire.lng], { icon: fireIcon })
     .bindPopup(`<b>${fire.id}</b><br>${terrainLabel(fire.terrain)} · ${Math.round(fire.radius)}m`)
     .addTo(targetMap);
-
-  // Yangın yayılma dairesi
   L.circle([fire.lat, fire.lng], {
-    color: '#e63946', fillColor: '#e63946', fillOpacity: 0.12,
-    radius: fire.radius, weight: 1.5
+    color: '#e63946', fillColor: '#e63946', fillOpacity: 0.12, radius: fire.radius, weight: 1.5
   }).addTo(targetMap);
 
-  // Gerçek yol rotası çizgisi (ince gölge + üst çizgi)
-  L.polyline(routeCoords, { color: '#1a3a5c', weight: 6, opacity: 0.6 }).addTo(targetMap);
-  L.polyline(routeCoords, { color: '#58a6ff', weight: 3, opacity: 0.95 }).addTo(targetMap);
+  // Rota çizgisi: detour ise turuncu, normal ise mavi
+  const lineColor   = hasDetour ? '#ff9944' : '#58a6ff';
+  const shadowColor = hasDetour ? '#3d2200' : '#1a3a5c';
+  L.polyline(routeCoords, { color: shadowColor, weight: 6, opacity: 0.55 }).addTo(targetMap);
+  L.polyline(routeCoords, { color: lineColor,   weight: 3, opacity: 0.95 }).addTo(targetMap);
 
-  // Başlangıç ve bitiş noktası işaretçileri
-  L.circleMarker(routeCoords[0], { radius: 7, color: '#58a6ff', fillColor: '#58a6ff', fillOpacity: 1, weight: 2 }).addTo(targetMap);
+  L.circleMarker(routeCoords[0],                      { radius: 7, color: '#58a6ff', fillColor: '#58a6ff', fillOpacity: 1, weight: 2 }).addTo(targetMap);
   L.circleMarker(routeCoords[routeCoords.length - 1], { radius: 7, color: '#e63946', fillColor: '#e63946', fillOpacity: 1, weight: 2 }).addTo(targetMap);
 
-  const bounds = L.latLngBounds(routeCoords);
-  targetMap.fitBounds(bounds, { padding: [40, 40] });
+  targetMap.fitBounds(L.latLngBounds(routeCoords), { padding: [40, 40] });
 }
 
 function dispatchSpecific(teamId, fireId) {

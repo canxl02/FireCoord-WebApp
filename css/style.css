@@ -884,3 +884,81 @@ tbody tr:last-child td { border: none; }
 .sim-log-entry.danger { color: #e63946; }
 .sim-log-entry.info { color: #58a6ff; }
 .sim-log-entry.success { color: #3fb950; }
+
+/* ================ OFFLINE BAR ================ */
+.offline-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 9998;
+  background: linear-gradient(135deg, #1e0d00, #2d1400);
+  border-top: 2px solid #ff7700;
+  padding: 7px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 12px;
+  color: #ffb366;
+  animation: offline-pulse 2.4s ease-in-out infinite;
+}
+.offline-bar .ob-icon { font-size: 16px; animation: spin 3s linear infinite; }
+.offline-bar .ob-title { font-weight: 700; color: #ff9944; font-size: 13px; }
+.offline-bar .ob-hint { color: #7a4d20; font-size: 11px; margin-left: auto; }
+
+@keyframes offline-pulse {
+  0%, 100% { border-top-color: #ff6600; }
+  50%       { border-top-color: #ffaa44; }
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.sync-badge {
+  background: #ff7700;
+  color: white;
+  border-radius: 20px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  min-width: 22px;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ================ SAFE PATH / ROUTE OPTIMIZATION ================ */
+.safe-path-info {
+  margin: 10px 0 4px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.safe-path-info.safe {
+  background: rgba(63, 185, 80, 0.07);
+  border: 1px solid rgba(63, 185, 80, 0.3);
+  color: #3fb950;
+}
+.safe-path-info.detour {
+  background: rgba(255, 119, 0, 0.08);
+  border: 1px solid rgba(255, 119, 0, 0.4);
+  color: #ff9944;
+}
+.safe-path-avoided {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+.avoided-tag {
+  background: rgba(255, 119, 0, 0.14);
+  border: 1px solid rgba(255, 119, 0, 0.35);
+  border-radius: 12px;
+  padding: 2px 9px;
+  font-size: 10px;
+  color: #ff9944;
+  font-weight: 600;
+}

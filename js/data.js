@@ -18,6 +18,7 @@ const AppState = {
   teams: [],
   users: [],
   notifications: [],
+  reports: [],
 
   _lastRouteCoords: null,
   _lastRouteTeamId: null,
@@ -79,16 +80,21 @@ function initFirebaseListeners() {
     AppState.users = users;
     if (document.getElementById('panel-mgmt').classList.contains('active')) renderMgmt();
   });
+
+  listenReports(reports => {
+    AppState.reports = reports;
+    if (document.getElementById('panel-mgmt').classList.contains('active')) renderMgmt();
+  });
 }
 
 // ---- Helpers ----
 
 function statusLabel(s) {
-  return { available: 'Uygun', on_duty: 'Görevde', maintenance: 'Bakımda', on_route: 'Yolda', extinguished: 'Söndürüldü' }[s] || s;
+  return { available: 'Uygun', on_duty: 'Görevde', maintenance: 'Bakımda', on_route: 'Yolda', extinguished: 'Söndürüldü', task_complete: 'Tamamlandı', pending_report: 'Onay Bekliyor' }[s] || s;
 }
 
 function statusBadgeClass(s) {
-  return { available: 'badge-green', on_duty: 'badge-yellow', maintenance: 'badge-red', on_route: 'badge-blue', extinguished: 'badge-gray' }[s] || 'badge-gray';
+  return { available: 'badge-green', on_duty: 'badge-yellow', maintenance: 'badge-red', on_route: 'badge-blue', extinguished: 'badge-gray', task_complete: 'badge-green', pending_report: 'badge-yellow' }[s] || 'badge-gray';
 }
 
 function intensityLabel(i) {

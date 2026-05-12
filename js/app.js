@@ -8,7 +8,7 @@ let simInterval = null;
 let clockInterval = null;
 let moveTick = 0;
 
-const _fireSectionOpen = { active: true, ext: false };
+const _fireSectionOpen = { active: true, pending: true, ext: false };
 const EQUIP_LIST = ['maske', 'hortum', 'söndürücü', 'telsiz', 'ilk yardım çantası'];
 const VEHICLES = [
   { id: 'V001', type: 'Yangın Söndürme Aracı' },
@@ -353,12 +353,13 @@ function fireCardHTML(fire) {
   const role = AppState.currentUser?.role;
   const user = AppState.currentUser;
   const extinguished = fire.status === 'extinguished';
+  const pendingReport = fire.status === 'pending_report';
   const intensityClass = fire.intensity === 'high' ? '' : fire.intensity === 'medium' ? 'medium-intensity' : 'low-intensity';
   const blocks = [1,2,3,4,5].map(i => {
     const limit = fire.intensity === 'high' ? 5 : fire.intensity === 'medium' ? 3 : 1;
     return `<div class="intensity-block ${i<=limit ? 'filled '+fire.intensity : ''}"></div>`;
   }).join('');
-  const best = !extinguished ? getBestTeam(fire.id) : null;
+  const best = !extinguished && !pendingReport ? getBestTeam(fire.id) : null;
 
   const teamNames = fire.assignedTeams.length
     ? fire.assignedTeams.map(tid => { const t = AppState.teams.find(x => x.id === tid); return t ? t.name : tid; }).join(', ')
@@ -367,27 +368,48 @@ function fireCardHTML(fire) {
     ? fire.assignedChiefs.map(cid => { const u = AppState.users.find(x => x.id === cid); return u ? u.name : cid; }).join(', ')
     : 'Yok';
 
+  let badgeClass, badgeLabel;
+  if (extinguished)       { badgeClass = 'badge-gray';   badgeLabel = 'Söndürüldü'; }
+  else if (pendingReport) { badgeClass = 'badge-yellow';  badgeLabel = '⏳ Onay Bekliyor'; }
+  else                    { badgeClass = fire.intensity === 'high' ? 'badge-red' : fire.intensity === 'medium' ? 'badge-yellow' : 'badge-green'; badgeLabel = intensityLabel(fire.intensity); }
+
   let btns = '';
   if (!extinguished) {
-    if (role === 'merkez') {
-      btns += `<button class="btn btn-primary btn-sm" onclick="showAssignChiefModal('${fire.id}')">👨‍🚒 Şef Görevlendir</button>`;
-      btns += `<button class="btn btn-success btn-sm" onclick="extinguishFire('${fire.id}')">✅ Söndür</button>`;
-    } else if (role === 'sef' && (fire.assignedChiefs || []).includes(user.id)) {
-      btns += `<button class="btn btn-primary btn-sm" onclick="showDispatchModal('${fire.id}')">🚒 Ekip Gönder</button>`;
+    if (pendingReport) {
+      // Şef: onay butonu (kendi yangınıysa)
+      if (role === 'sef' && (fire.assignedChiefs || []).includes(user.id)) {
+        btns += `<button class="btn btn-success btn-sm" onclick="showReportModal('${fire.id}')">📋 Onayla ve Raporla</button>`;
+      }
+      // Merkez: yine de manuel söndürme yapabilir
+      if (role === 'merkez') {
+        btns += `<button class="btn btn-success btn-sm" onclick="extinguishFire('${fire.id}')">✅ Manuel Söndür</button>`;
+      }
+    } else {
+      if (role === 'merkez') {
+        btns += `<button class="btn btn-primary btn-sm" onclick="showAssignChiefModal('${fire.id}')">👨‍🚒 Şef Görevlendir</button>`;
+        btns += `<button class="btn btn-success btn-sm" onclick="extinguishFire('${fire.id}')">✅ Söndür</button>`;
+      } else if (role === 'sef' && (fire.assignedChiefs || []).includes(user.id)) {
+        btns += `<button class="btn btn-primary btn-sm" onclick="showDispatchModal('${fire.id}')">🚒 Ekip Gönder</button>`;
+      }
     }
     btns += `<button class="btn btn-secondary btn-sm" onclick="focusOnMap('${fire.id}')">🗺 Haritada Gör</button>`;
   }
 
+  const pendingBanner = pendingReport ? `
+    <div style="margin-top:10px;padding:8px 12px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.4);border-radius:6px;font-size:12px;color:#d29922">
+      ⏳ Tüm ekip üyeleri görevlerini tamamladı. İtfaiye şefinin onayı bekleniyor.
+    </div>` : '';
+
   return `
   <div class="card fire-card ${intensityClass}" id="fcard-${fire.id}">
     <div class="card-header">
-      <div class="card-icon">🔥</div>
+      <div class="card-icon">${pendingReport ? '⏳' : '🔥'}</div>
       <div>
         <div class="card-title">${fire.id}</div>
         <div class="card-subtitle">${terrainLabel(fire.terrain)} · ${timeStr(fire.startTime)}</div>
       </div>
       <div class="card-status">
-        <span class="badge ${extinguished ? 'badge-gray' : fire.intensity === 'high' ? 'badge-red' : fire.intensity === 'medium' ? 'badge-yellow' : 'badge-green'}">${extinguished ? 'Söndürüldü' : intensityLabel(fire.intensity)}</span>
+        <span class="badge ${badgeClass}">${badgeLabel}</span>
       </div>
     </div>
     <div class="intensity-bar">${blocks}</div>
@@ -402,6 +424,7 @@ function fireCardHTML(fire) {
       <div style="font-size:10px;color:#6e7681;text-transform:uppercase;margin-bottom:4px">Önerilen Ekip</div>
       <div style="font-size:12px;color:#58a6ff">${best.team.name} · ${best.distance} km · Skor: %${best.score}</div>
     </div>` : ''}
+    ${pendingBanner}
     ${btns ? `<div class="btn-group">${btns}</div>` : ''}
   </div>`;
 }
@@ -409,40 +432,36 @@ function fireCardHTML(fire) {
 function renderFires() {
   const grid = document.getElementById('firesGrid');
   const stats = document.getElementById('fireStats');
-  const active = AppState.fires.filter(f => f.status === 'active');
-  const ext = AppState.fires.filter(f => f.status === 'extinguished');
+  const active  = AppState.fires.filter(f => f.status === 'active');
+  const pending = AppState.fires.filter(f => f.status === 'pending_report');
+  const ext     = AppState.fires.filter(f => f.status === 'extinguished');
   const affectedArea = Math.round(active.reduce((a,f) => a + Math.PI*f.radius*f.radius/1e6, 0) * 10) / 10;
 
   stats.innerHTML = `
     <div class="stat-card red"><div class="stat-icon">🔥</div><div><div class="stat-val">${active.length}</div><div class="stat-label">Aktif Yangın</div></div></div>
+    <div class="stat-card yellow"><div class="stat-icon">⏳</div><div><div class="stat-val">${pending.length}</div><div class="stat-label">Onay Bekliyor</div></div></div>
     <div class="stat-card green"><div class="stat-icon">✅</div><div><div class="stat-val">${ext.length}</div><div class="stat-label">Söndürüldü</div></div></div>
-    <div class="stat-card yellow"><div class="stat-icon">👥</div><div><div class="stat-val">${active.reduce((a,f)=>a+f.assignedTeams.length,0)}</div><div class="stat-label">Aktif Ekip</div></div></div>
     <div class="stat-card blue"><div class="stat-icon">📐</div><div><div class="stat-val">${affectedArea}</div><div class="stat-label">Etkilenen Alan (km²)</div></div></div>
   `;
 
-  const activeHTML = active.length
-    ? `<div class="cards-grid">${active.map(fireCardHTML).join('')}</div>`
-    : '<div style="color:#6e7681;padding:16px;text-align:center">Aktif yangın yok</div>';
-  const extHTML = ext.length
-    ? `<div class="cards-grid">${ext.map(fireCardHTML).join('')}</div>`
-    : '<div style="color:#6e7681;padding:16px;text-align:center">Söndürülen yangın yok</div>';
+  const section = (key, icon, title, fires, emptyMsg) => {
+    const html = fires.length
+      ? `<div class="cards-grid">${fires.map(fireCardHTML).join('')}</div>`
+      : `<div style="color:#6e7681;padding:16px;text-align:center">${emptyMsg}</div>`;
+    return `
+      <div class="fire-section">
+        <div class="fire-section-header" onclick="toggleFireSection('${key}')">
+          <span>${icon} ${title} <span class="fire-section-count">${fires.length}</span></span>
+          <span class="fire-section-arrow">${_fireSectionOpen[key] ? '▲' : '▼'}</span>
+        </div>
+        ${_fireSectionOpen[key] ? html : ''}
+      </div>`;
+  };
 
-  grid.innerHTML = `
-    <div class="fire-section">
-      <div class="fire-section-header" onclick="toggleFireSection('active')">
-        <span>🔥 Aktif Yangınlar <span class="fire-section-count">${active.length}</span></span>
-        <span class="fire-section-arrow">${_fireSectionOpen.active ? '▲' : '▼'}</span>
-      </div>
-      ${_fireSectionOpen.active ? activeHTML : ''}
-    </div>
-    <div class="fire-section">
-      <div class="fire-section-header" onclick="toggleFireSection('ext')">
-        <span>✅ Söndürülen Yangınlar <span class="fire-section-count">${ext.length}</span></span>
-        <span class="fire-section-arrow">${_fireSectionOpen.ext ? '▲' : '▼'}</span>
-      </div>
-      ${_fireSectionOpen.ext ? extHTML : ''}
-    </div>
-  `;
+  grid.innerHTML =
+    section('active',  '🔥', 'Aktif Yangınlar',       active,  'Aktif yangın yok') +
+    section('pending', '⏳', 'Onay Bekleyen Yangınlar', pending, 'Onay bekleyen yangın yok') +
+    section('ext',     '✅', 'Söndürülen Yangınlar',   ext,     'Söndürülen yangın yok');
 }
 
 function focusOnMap(fireId) {
@@ -560,7 +579,6 @@ function saveDispatch() {
 function extinguishFire(fireId) {
   const fire = AppState.fires.find(f => f.id === fireId);
   if (!fire) return;
-
   fire.assignedTeams.forEach(tid => {
     const team = AppState.teams.find(t => t.id === tid);
     if (team) dbUnassignTeam(tid, fireId, Math.max(10, team.water - 30));
@@ -568,6 +586,80 @@ function extinguishFire(fireId) {
   dbExtinguishFire(fireId);
   dbAddNotification(`${fireId} yangını söndürüldü!`, 'success');
   addLog(fireId + ' yangını söndürüldü!', 'success');
+}
+
+// ---- RAPOR MODAL ----
+function showReportModal(fireId) {
+  const fire = AppState.fires.find(f => f.id === fireId);
+  if (!fire) return;
+  const chief = AppState.currentUser;
+  const respondingTeams  = fire.assignedTeams.map(tid => AppState.teams.find(t => t.id === tid)).filter(Boolean);
+  const respondingChiefs = (fire.assignedChiefs || []).map(cid => AppState.users.find(u => u.id === cid)).filter(Boolean);
+  const durationMin = Math.floor((Date.now() - (fire.startTime instanceof Date ? fire.startTime.getTime() : fire.startTime)) / 60000);
+  const durationStr = durationMin < 60 ? `${durationMin} dakika` : `${Math.floor(durationMin/60)} saat ${durationMin % 60} dakika`;
+  const endTime = new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+
+  document.getElementById('reportFireIdVal').value = fireId;
+  document.getElementById('reportContent').innerHTML = `
+    <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:16px;font-size:13px;display:grid;gap:8px">
+      <div style="font-size:10px;color:#6e7681;text-transform:uppercase;font-weight:600;margin-bottom:4px">📋 Yangın Söndürme Raporu</div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Yangın ID</span><span style="color:#e6edf3;font-weight:600">${fire.id}</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Konum</span><span style="color:#e6edf3">${fire.lat.toFixed(4)}, ${fire.lng.toFixed(4)}</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Arazi Tipi</span><span style="color:#e6edf3">${terrainLabel(fire.terrain)}</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Son Yoğunluk</span><span style="color:#e6edf3">${intensityLabel(fire.intensity)}</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Son Yarıçap</span><span style="color:#e6edf3">${Math.round(fire.radius)} m</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Bildiren</span><span style="color:#e6edf3">${fire.reportedBy}</span></div>
+      <div style="border-top:1px solid #21262d;margin:2px 0"></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Başlangıç</span><span style="color:#e6edf3">${timeStr(fire.startTime)}</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Söndürülme</span><span style="color:#e6edf3">${endTime}</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Müdahale Süresi</span><span style="color:#3fb950;font-weight:600">${durationStr}</span></div>
+      <div style="border-top:1px solid #21262d;margin:2px 0"></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Müdahale Eden Ekip(ler)</span><span style="color:#58a6ff">${respondingTeams.map(t => t.name).join(', ') || '—'}</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Görevli Şef(ler)</span><span style="color:#d29922">${respondingChiefs.map(u => u.name).join(', ') || '—'}</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">Raporu Onaylayan</span><span style="color:#3fb950;font-weight:600">${chief.name}</span></div>
+    </div>
+    <div style="margin-top:10px;padding:10px 12px;background:rgba(63,185,80,0.08);border:1px solid rgba(63,185,80,0.3);border-radius:6px;font-size:12px;color:#3fb950">
+      Bu raporu onayladığınızda yangın söndürülmüş olarak işaretlenecek ve Merkez dashboardına iletilecektir.
+    </div>
+  `;
+  document.getElementById('reportModal').classList.add('open');
+}
+
+function submitReport() {
+  const fireId = document.getElementById('reportFireIdVal').value;
+  const fire = AppState.fires.find(f => f.id === fireId);
+  if (!fire) return;
+  const chief = AppState.currentUser;
+  const respondingTeams  = fire.assignedTeams.map(tid => AppState.teams.find(t => t.id === tid)).filter(Boolean);
+  const respondingChiefs = (fire.assignedChiefs || []).map(cid => AppState.users.find(u => u.id === cid)).filter(Boolean);
+  const now = Date.now();
+  const durationMin = Math.floor((now - (fire.startTime instanceof Date ? fire.startTime.getTime() : fire.startTime)) / 60000);
+
+  const report = {
+    id: 'RPT' + now,
+    fireId: fire.id,
+    submittedAt: now,
+    submittedAtStr: new Date(now).toLocaleString('tr-TR'),
+    approvedBy: chief.name,
+    approvedByUserId: chief.id,
+    fireData: {
+      lat: fire.lat, lng: fire.lng,
+      terrain: fire.terrain, intensity: fire.intensity,
+      radius: Math.round(fire.radius),
+      reportedBy: fire.reportedBy,
+      startTime: fire.startTime instanceof Date ? fire.startTime.getTime() : fire.startTime,
+      endTime: now
+    },
+    teamIds: fire.assignedTeams,
+    teamNames: respondingTeams.map(t => t.name),
+    chiefNames: respondingChiefs.map(u => u.name),
+    durationMin
+  };
+
+  dbSubmitReport(report);
+  dbAddNotification(`📋 ${fire.id} yangın söndürme raporu ${chief.name} tarafından onaylandı.`, 'success');
+  addLog(`${fire.id} raporu onaylandı ve Merkez'e gönderildi — ${chief.name}`, 'success');
+  closeModal('reportModal');
 }
 
 // ---- TEAMS PANEL ----
@@ -1010,6 +1102,50 @@ function renderMgmt() {
       <div class="log-dot" style="background:${l.type==='warn'?'#d29922':l.type==='danger'?'#e63946':l.type==='success'?'#3fb950':'#58a6ff'}"></div>
       <span class="log-text">${l.text}</span>
     </div>`).join('') || '<div class="text-muted">Henüz log yok</div>';
+
+  // Incident Reports (merkez only)
+  const role = AppState.currentUser?.role;
+  let reportsSection = document.getElementById('reportsSection');
+  if (role === 'merkez') {
+    if (!reportsSection) {
+      reportsSection = document.createElement('div');
+      reportsSection.id = 'reportsSection';
+      reportsSection.className = 'mgmt-section';
+      reportsSection.style.gridColumn = '1 / -1';
+      document.querySelector('.mgmt-grid').appendChild(reportsSection);
+    }
+    const reports = (AppState.reports || []).slice().sort((a, b) => b.submittedAt - a.submittedAt);
+    reportsSection.innerHTML = `
+      <div class="mgmt-section-header">
+        <h3>📋 Yangın Söndürme Raporları</h3>
+        <span style="font-size:12px;color:#6e7681">${reports.length} rapor</span>
+      </div>
+      ${reports.length === 0
+        ? '<div style="padding:20px;color:#6e7681;text-align:center">Henüz gönderilen rapor yok</div>'
+        : reports.map(r => {
+            const dur = r.durationMin < 60 ? r.durationMin + ' dk' : Math.floor(r.durationMin/60) + 's ' + (r.durationMin%60) + 'dk';
+            return `
+            <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:14px;margin-bottom:10px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                <div>
+                  <span style="font-weight:600;color:#e6edf3;font-size:14px">🔥 ${r.fireId}</span>
+                  <span class="badge badge-green" style="margin-left:8px">Söndürüldü</span>
+                </div>
+                <span style="font-size:11px;color:#6e7681">${r.submittedAtStr}</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px">
+                <div style="color:#8b949e">Konum: <span style="color:#c9d1d9">${r.fireData.lat.toFixed(4)}, ${r.fireData.lng.toFixed(4)}</span></div>
+                <div style="color:#8b949e">Arazi: <span style="color:#c9d1d9">${terrainLabel(r.fireData.terrain)}</span></div>
+                <div style="color:#8b949e">Son Yoğunluk: <span style="color:#c9d1d9">${intensityLabel(r.fireData.intensity)}</span></div>
+                <div style="color:#8b949e">Son Yarıçap: <span style="color:#c9d1d9">${r.fireData.radius} m</span></div>
+                <div style="color:#8b949e">Müdahale Süresi: <span style="color:#3fb950;font-weight:600">${dur}</span></div>
+                <div style="color:#8b949e">Raporu Onaylayan: <span style="color:#d29922">${r.approvedBy}</span></div>
+                <div style="color:#8b949e;grid-column:1/-1">Müdahale Eden Ekip(ler): <span style="color:#58a6ff">${(r.teamNames || []).join(', ') || '—'}</span></div>
+                <div style="color:#8b949e;grid-column:1/-1">Görevli Şef(ler): <span style="color:#d29922">${(r.chiefNames || []).join(', ') || '—'}</span></div>
+              </div>
+            </div>`;
+          }).join('')}`;
+  }
 }
 
 function toggleUser(userId) {

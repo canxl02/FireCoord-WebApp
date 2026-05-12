@@ -521,6 +521,19 @@
   </div>
 </div>
 
+<!-- ============ REPORT MODAL ============ -->
+<div class="modal-overlay" id="reportModal">
+  <div class="modal" style="max-width:520px">
+    <h3>📋 Yangın Söndürme Raporu</h3>
+    <input type="hidden" id="reportFireIdVal">
+    <div id="reportContent"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('reportModal')">İptal</button>
+      <button class="btn btn-success" onclick="submitReport()">✅ Onayla ve Gönder</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ ADD MEMBER MODAL ============ -->
 <div class="modal-overlay" id="addMemberModal">
   <div class="modal">

@@ -253,7 +253,7 @@ function dbDeleteTeam(teamId) {
 }
 
 // ---- Üye bazlı görev tamamlama ----
-// Kullanıcı tamamladı → tüm üyeler bittiyse ekibi unassign et
+// Kullanıcı tamamladı → ekip 'task_complete' → tüm ekipler bittiyse yangın 'pending_report'
 function dbMarkMemberComplete(fireId, teamId, userId) {
   return db.ref('fires/' + fireId + '/taskCompletions/' + teamId + '/' + userId).set(true)
     .then(() => Promise.all([
@@ -265,11 +265,46 @@ function dbMarkMemberComplete(fireId, teamId, userId) {
       const allUsers    = usersSnap.val() || {};
       const members = Object.values(allUsers).filter(u => u.teamId === teamId && u.active !== false);
       if (members.length > 0 && members.every(u => completions[u.id])) {
-        return db.ref('teams/' + teamId + '/water').once('value').then(wSnap =>
-          dbUnassignTeam(teamId, fireId, Math.max(10, (wSnap.val() || 0) - 20))
-        );
+        // Bu ekibin tüm üyeleri tamamladı — ekip durumunu task_complete yap
+        return db.ref('teams/' + teamId + '/status').set('task_complete')
+          .then(() => db.ref('fires/' + fireId).once('value'))
+          .then(fireSnap => {
+            const fireData = fireSnap.val();
+            if (!fireData || fireData.status !== 'active') return;
+            const assignedTeamIds = Object.keys(fireData.assignedTeams || {}).filter(k => fireData.assignedTeams[k]);
+            if (assignedTeamIds.length === 0) return;
+            // Atanan tüm ekipler task_complete mi?
+            return Promise.all(assignedTeamIds.map(tid =>
+              db.ref('teams/' + tid + '/status').once('value')
+            )).then(snaps => {
+              if (snaps.every(s => s.val() === 'task_complete')) {
+                return db.ref('fires/' + fireId + '/status').set('pending_report');
+              }
+            });
+          });
       }
     });
+}
+
+// ---- Rapor gönderme — yangını söndürür, ekipleri serbest bırakır ----
+function dbSubmitReport(report) {
+  const updates = {};
+  updates['reports/' + report.id] = report;
+  updates['fires/' + report.fireId + '/status'] = 'extinguished';
+  updates['fires/' + report.fireId + '/assignedTeams'] = {};
+  (report.teamIds || []).forEach(tid => {
+    updates['teams/' + tid + '/assignedFire'] = null;
+    updates['teams/' + tid + '/status'] = 'available';
+  });
+  return db.ref().update(updates);
+}
+
+// ---- Real-time listener: Raporlar ----
+function listenReports(callback) {
+  db.ref('reports').on('value', snap => {
+    const val = snap.val();
+    callback(val ? Object.values(val).sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0)) : []);
+  });
 }
 
 function dbMarkAllNotifsRead() {

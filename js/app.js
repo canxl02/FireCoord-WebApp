@@ -8,6 +8,11 @@ let simInterval = null;
 let clockInterval = null;
 let moveTick = 0;
 
+// Route planner state — 3 route options (safe / balanced / fast)
+let _routeOptions  = {};
+let _activeRouteKey = 'safe';
+let _routeCtx = null; // { team, fire, score }
+
 const _fireSectionOpen = { active: true, pending: true, ext: false };
 const EQUIP_LIST = ['maske', 'hortum', 'söndürücü', 'telsiz', 'ilk yardım çantası'];
 const VEHICLES = [
@@ -822,56 +827,87 @@ function renderRoute() {
 }
 
 // ---- SAFE PATH GENERATION ----
-// Aktif yangın tehlike bölgelerini (radius + buffer) aşmak için detour noktaları hesaplar.
-// Geri dönüş: { waypoints, avoided, zones } veya rota güvenli ise null.
-function generateSafePath(teamLat, teamLng, fireLat, fireLng, targetFireId) {
-  const SAFETY_BUFFER_KM = 0.4;  // fire radius üzerine eklenen güvenlik payı (km)
-  const MIN_EXCLUSION_KM = 0.25; // minimum dışlama yarıçapı
+// strategy: 'safe'  → 3-arc waypoints, büyük buffer (OSRM'i güvenli yola zorlar)
+//           'balanced' → 1 waypoint, orta buffer
+// Geri dönüş: { waypoints, avoided, zones } veya rota temizse null.
+function generateSafePathStrategic(teamLat, teamLng, fireLat, fireLng, targetFireId, strategy) {
+  const BUFFER = strategy === 'safe' ? 1.2 : 0.5;
+  const MIN_R  = strategy === 'safe' ? 0.7 : 0.3;
 
   const dangerFires = AppState.fires.filter(f =>
     (f.status === 'active' || f.status === 'pending_report') && f.id !== targetFireId
   );
   if (dangerFires.length === 0) return null;
 
-  // Yerel kartezyen koordinat dönüşümleri (km, ekip konumu referans nokta)
-  const cosLat = Math.cos(teamLat * Math.PI / 180);
-  const toLocal  = (lat, lng) => ({ x: (lng - teamLng) * cosLat * 111.32, y: (lat - teamLat) * 111.32 });
-  const fromLocal = (x, y)    => [teamLat + y / 111.32, teamLng + x / (111.32 * cosLat)];
+  const cosLat   = Math.cos(teamLat * Math.PI / 180);
+  const toLocal   = (lat, lng) => ({ x: (lng - teamLng) * cosLat * 111.32, y: (lat - teamLat) * 111.32 });
+  const fromLocal = (x, y)     => [teamLat + y / 111.32, teamLng + x / (111.32 * cosLat)];
 
   const B = toLocal(fireLat, fireLng);
   const ABlen = Math.hypot(B.x, B.y);
   if (ABlen < 0.01) return null;
   const ABu = { x: B.x / ABlen, y: B.y / ABlen };
 
-  const bypasses = [];
+  const allBypasses = [];
 
   dangerFires.forEach(fire => {
     const C = toLocal(fire.lat, fire.lng);
-    const safeR = Math.max(MIN_EXCLUSION_KM, fire.radius / 1000 + SAFETY_BUFFER_KM);
+    const safeR = Math.max(MIN_R, fire.radius / 1000 + BUFFER);
 
-    // C noktasının AB doğrusuna olan projeksiyon t'si (0..ABlen arası sıkıştırılır)
-    const t = Math.max(0, Math.min(ABlen, C.x * ABu.x + C.y * ABu.y));
+    // Projeksiyon: yangın merkezinin AB doğrusuna en yakın noktası
+    const t  = Math.max(0, Math.min(ABlen, C.x * ABu.x + C.y * ABu.y));
     const Px = ABu.x * t, Py = ABu.y * t;
     const dist = Math.hypot(C.x - Px, C.y - Py);
 
-    if (dist < safeR) {
-      // Yangından uzağa doğru dik yön hesapla
-      const perpLen = dist < 0.001 ? 1 : dist;
-      const px = (Px - C.x) / perpLen;
-      const py = (Py - C.y) / perpLen;
-      const bypass = fromLocal(Px + px * (safeR + 0.25), Py + py * (safeR + 0.25));
-      bypasses.push({ pt: bypass, t, fireId: fire.id, fireLat: fire.lat, fireLng: fire.lng, safeR });
+    if (dist >= safeR) return; // rota bu yangın bölgesinden güvenli geçiyor
+
+    // Cross-product: yangının rotanın hangi tarafında olduğunu belirle
+    // ABu × AC > 0 → yangın SOLda, detour SAĞA (bx=ABu.y, by=-ABu.x)
+    // ABu × AC < 0 → yangın SAĞDA, detour SOLA (bx=-ABu.y, by=ABu.x)
+    const cross = ABu.x * C.y - ABu.y * C.x;
+    const bx = cross >= 0 ?  ABu.y : -ABu.y;
+    const by = cross >= 0 ? -ABu.x :  ABu.x;
+
+    if (strategy === 'safe') {
+      // 3 noktalı yay: giriş → tepe → çıkış (OSRM'i bölgeden uzak tutar)
+      const arcOff = Math.min(safeR * 0.9, ABlen * 0.12);
+      const t0 = Math.max(safeR * 0.2, t - arcOff);
+      const t2 = Math.min(ABlen - safeR * 0.2, t + arcOff);
+
+      // Her noktayı yangın merkezinden safeR uzaklıkta konumlandır (garanti mesafe)
+      const entry = { x: C.x + bx * safeR * 1.05, y: C.y + by * safeR * 1.05 };
+      const peak  = { x: C.x + bx * safeR * 1.6,  y: C.y + by * safeR * 1.6  };
+      const exit_ = { x: C.x + bx * safeR * 1.05, y: C.y + by * safeR * 1.05 };
+
+      // Giriş ve çıkışı t0/t2 konumuna doğru hafifçe kaydır
+      entry.x += ABu.x * (t0 - t) * 0.3;
+      entry.y += ABu.y * (t0 - t) * 0.3;
+      exit_.x += ABu.x * (t2 - t) * 0.3;
+      exit_.y += ABu.y * (t2 - t) * 0.3;
+
+      allBypasses.push({ pt: fromLocal(entry.x, entry.y), t: t0, fireId: fire.id, fireLat: fire.lat, fireLng: fire.lng, safeR });
+      allBypasses.push({ pt: fromLocal(peak.x,  peak.y),  t,     fireId: fire.id, fireLat: fire.lat, fireLng: fire.lng, safeR });
+      allBypasses.push({ pt: fromLocal(exit_.x, exit_.y), t: t2, fireId: fire.id, fireLat: fire.lat, fireLng: fire.lng, safeR });
+    } else {
+      // 1 bypass noktası: yangın merkezinden safeR * 1.3 uzaklıkta
+      const p = { x: C.x + bx * safeR * 1.3, y: C.y + by * safeR * 1.3 };
+      allBypasses.push({ pt: fromLocal(p.x, p.y), t, fireId: fire.id, fireLat: fire.lat, fireLng: fire.lng, safeR });
     }
   });
 
-  if (bypasses.length === 0) return null;
+  if (allBypasses.length === 0) return null;
+  allBypasses.sort((a, b) => a.t - b.t);
 
-  bypasses.sort((a, b) => a.t - b.t); // rota boyunca sırala
+  const avoidedIds = [...new Set(allBypasses.map(b => b.fireId))];
+  const zonesMap = {};
+  allBypasses.forEach(b => {
+    if (!zonesMap[b.fireId]) zonesMap[b.fireId] = { lat: b.fireLat, lng: b.fireLng, radius: b.safeR * 1000 };
+  });
 
   return {
-    waypoints: bypasses.map(b => b.pt),
-    avoided:   bypasses.map(b => b.fireId),
-    zones:     bypasses.map(b => ({ lat: b.fireLat, lng: b.fireLng, radius: b.safeR * 1000 }))
+    waypoints: allBypasses.map(b => b.pt),
+    avoided:   avoidedIds,
+    zones:     Object.values(zonesMap)
   };
 }
 
@@ -942,78 +978,120 @@ async function calcRoute() {
   const team = AppState.teams.find(t => t.id === teamId);
   if (!fire || !team) return;
 
-  const score = teamScore(team, fire);
-
-  // Güvenli rota analizi
-  const safeResult = generateSafePath(team.lat, team.lng, fire.lat, fire.lng, fireId);
-  const hasDetour  = safeResult && safeResult.waypoints.length > 0;
-
   document.getElementById('routeResult').innerHTML = `
     <div class="card mt-3" style="text-align:center;padding:28px;color:#8b949e">
-      <div style="font-size:28px;margin-bottom:8px">${hasDetour ? '⚠️' : '🗺'}</div>
-      <div>${hasDetour ? 'Güvenli rota hesaplanıyor — tehlike bölgeleri atlanıyor...' : 'Gerçek yol rotası hesaplanıyor...'}</div>
-      <div style="font-size:11px;margin-top:4px">${hasDetour ? safeResult.avoided.length + ' aktif yangın güzergahtan çıkarıldı' : 'OSRM açık kaynak yönlendirme motoru'}</div>
+      <div style="font-size:28px;margin-bottom:8px">🔍</div>
+      <div>3 farklı rota hesaplanıyor...</div>
+      <div style="font-size:11px;margin-top:4px">En güvenli · Dengeli · En hızlı</div>
     </div>`;
-
   drawRouteOnMap(routeMap, team, fire, null, null);
 
-  // Çok noktalı rota (detour varsa) ya da tek segment
-  let osrmRoute;
-  if (hasDetour) {
-    const allWpts = [[team.lat, team.lng], ...safeResult.waypoints, [fire.lat, fire.lng]];
-    osrmRoute = await fetchOSRMRouteMulti(allWpts);
-    if (!osrmRoute) osrmRoute = await fetchOSRMRoute(team.lat, team.lng, fire.lat, fire.lng);
-  } else {
-    osrmRoute = await fetchOSRMRoute(team.lat, team.lng, fire.lat, fire.lng);
-  }
+  const safeSP     = generateSafePathStrategic(team.lat, team.lng, fire.lat, fire.lng, fireId, 'safe');
+  const balancedSP = generateSafePathStrategic(team.lat, team.lng, fire.lat, fire.lng, fireId, 'balanced');
 
-  let distKm, etaMin, routeCoords, routeSource;
-  if (osrmRoute) {
-    distKm     = (osrmRoute.distance / 1000).toFixed(2);
-    etaMin     = Math.round(osrmRoute.duration / 60);
-    routeCoords = geojsonToLatLng(osrmRoute.geometry.coordinates);
-    routeSource = hasDetour ? 'OSRM (Güvenli Rota)' : 'OSRM (Gerçek Yol)';
-  } else {
-    distKm     = haversine(team.lat, team.lng, fire.lat, fire.lng).toFixed(2);
-    etaMin     = team.speed > 0 ? Math.round((distKm / team.speed) * 60) : 0;
-    routeCoords = [[team.lat, team.lng], [fire.lat, fire.lng]];
-    routeSource = 'Düz Çizgi (İnternet yok)';
-  }
+  const makeWpts = sp => sp ? [[team.lat, team.lng], ...sp.waypoints, [fire.lat, fire.lng]] : null;
 
-  const stepsHTML    = osrmRoute ? buildStepsHTML(osrmRoute.legs) : '';
-  const routeColor   = hasDetour ? '#ff9944' : (osrmRoute ? '#3fb950' : '#d29922');
+  // 3 rotayı paralel hesapla
+  const [safeOSRM, balancedOSRM, fastOSRM] = await Promise.all([
+    makeWpts(safeSP) ? fetchOSRMRouteMulti(makeWpts(safeSP)) : fetchOSRMRoute(team.lat, team.lng, fire.lat, fire.lng),
+    makeWpts(balancedSP) ? fetchOSRMRouteMulti(makeWpts(balancedSP)) : fetchOSRMRoute(team.lat, team.lng, fire.lat, fire.lng),
+    fetchOSRMRoute(team.lat, team.lng, fire.lat, fire.lng)
+  ]);
+
+  const buildOpt = (osrm, sp) => {
+    const coords  = osrm ? geojsonToLatLng(osrm.geometry.coordinates) : [[team.lat, team.lng], [fire.lat, fire.lng]];
+    const distKm  = osrm ? (osrm.distance / 1000).toFixed(2) : haversine(team.lat, team.lng, fire.lat, fire.lng).toFixed(2);
+    const etaMin  = osrm ? Math.round(osrm.duration / 60) : (team.speed > 0 ? Math.round(distKm / team.speed * 60) : 0);
+    return { osrm, coords, distKm, etaMin, sp };
+  };
+
+  _routeOptions = {
+    safe:     buildOpt(safeOSRM,     safeSP),
+    balanced: buildOpt(balancedOSRM, balancedSP),
+    fast:     buildOpt(fastOSRM,     null)
+  };
+  _routeCtx = { team, fire, score: teamScore(team, fire) };
+  // Tehlike varsa güvenli'yi öner; yoksa hızlıyı öner
+  _activeRouteKey = (safeSP && safeSP.avoided.length > 0) ? 'safe' : 'fast';
+
+  renderRouteResult();
+}
+
+function selectRouteOption(key) {
+  _activeRouteKey = key;
+  renderRouteResult();
+}
+
+function renderRouteResult() {
+  if (!_routeCtx || !_routeOptions.safe) return;
+  const { team, fire, score } = _routeCtx;
+  const active     = _routeOptions[_activeRouteKey];
+  const hasDetour  = active.sp && active.sp.avoided.length > 0;
+  const stepsHTML  = active.osrm ? buildStepsHTML(active.osrm.legs) : '';
+
+  // Rota seçenek kartları
+  const optCard = (key, icon, label, color) => {
+    const opt = _routeOptions[key];
+    const on  = key === _activeRouteKey;
+    const cnt = opt.sp ? opt.sp.avoided.length : 0;
+    return `
+      <div class="route-option-card ${on ? 'active' : ''} ${key}-route" onclick="selectRouteOption('${key}')">
+        <div class="ro-icon">${icon}</div>
+        <div class="ro-label" style="color:${color}">${label}</div>
+        <div class="ro-dist">${opt.distKm} km</div>
+        <div class="ro-eta">${opt.etaMin} dk</div>
+        <div class="ro-avoid" style="color:${cnt > 0 ? '#ff9944' : '#6e7681'}">
+          ${cnt > 0 ? cnt + ' yangın atlandı' : 'Direkt rota'}
+        </div>
+      </div>`;
+  };
+
+  const routeLabel = {
+    safe:     'OSRM (En Güvenli)',
+    balanced: 'OSRM (Dengeli)',
+    fast:     active.osrm ? 'OSRM (En Hızlı)' : 'Düz Çizgi'
+  }[_activeRouteKey];
+  const routeColor = hasDetour ? '#ff9944' : (active.osrm ? '#3fb950' : '#d29922');
 
   const safeInfoHTML = hasDetour
     ? `<div class="safe-path-info detour">
         <div>
           <div style="font-weight:600;margin-bottom:4px">⚠️ Tehlike Bölgeleri Atlandı — Güvenli Rota Uygulandı</div>
-          <div style="opacity:0.9">${safeResult.avoided.length} aktif yangın güzergahtan çıkarıldı. Mesafe ve süre biraz artabilir.</div>
-          <div class="safe-path-avoided">${safeResult.avoided.map(id => `<span class="avoided-tag">🔥 ${id}</span>`).join('')}</div>
+          <div style="opacity:0.9">${active.sp.avoided.length} aktif yangın güzergahtan çıkarıldı. Mesafe ve süre biraz artabilir.</div>
+          <div class="safe-path-avoided">${active.sp.avoided.map(id => `<span class="avoided-tag">🔥 ${id}</span>`).join('')}</div>
         </div>
       </div>`
     : `<div class="safe-path-info safe">✅ Güvenli Rota — Aktif yangın yayılım bölgesi geçilmiyor</div>`;
 
   const detourSteps = hasDetour
-    ? safeResult.avoided.map(avId => `
-      <div class="route-step">
-        <div class="step-line">
-          <div class="step-dot" style="background:#ff9944"></div>
-          <div class="step-connector" style="background:#ff9944;opacity:0.4"></div>
-        </div>
-        <div class="step-info">
-          <div class="step-title" style="color:#ff9944">⚠️ ${avId} — Detour uygulandı</div>
-          <div class="step-detail">Yangın yayılım bölgesi güvenli şekilde aşıldı</div>
-        </div>
-      </div>`).join('')
+    ? [...new Set(active.sp.avoided)].map(avId => `
+        <div class="route-step">
+          <div class="step-line">
+            <div class="step-dot" style="background:#ff9944"></div>
+            <div class="step-connector" style="background:#ff9944;opacity:0.35"></div>
+          </div>
+          <div class="step-info">
+            <div class="step-title" style="color:#ff9944">⚠️ ${avId} — Detour uygulandı</div>
+            <div class="step-detail">Yangın yayılım bölgesi güvenli şekilde aşıldı</div>
+          </div>
+        </div>`).join('')
     : '';
+
+  const distPct = Math.round(Math.max(0, 1 - active.distKm / 30) * 100);
 
   document.getElementById('routeResult').innerHTML = `
     <div class="card mt-3">
-      <div class="card-header">
+      <div class="route-options">
+        ${optCard('safe',     '🛡️', 'En Güvenli', '#3fb950')}
+        ${optCard('balanced', '⚖️', 'Dengeli',    '#58a6ff')}
+        ${optCard('fast',     '🏎️', 'En Hızlı',   '#d29922')}
+      </div>
+
+      <div class="card-header" style="padding-top:0">
         <div class="card-icon">🗺</div>
         <div>
           <div class="card-title">Rota Hesaplandı</div>
-          <div class="card-subtitle">${team.name} → ${fire.id} · <span style="color:${routeColor}">${routeSource}</span></div>
+          <div class="card-subtitle">${team.name} → ${fire.id} · <span style="color:${routeColor}">${routeLabel}</span></div>
         </div>
       </div>
 
@@ -1036,16 +1114,16 @@ async function calcRoute() {
       </div>
 
       <div class="sep"></div>
-      <div class="info-row"><span class="key">Yol Mesafesi</span><span class="val">${distKm} km</span></div>
-      <div class="info-row"><span class="key">Tahmini Varış Süresi</span><span class="val" style="color:#3fb950">${etaMin} dakika</span></div>
+      <div class="info-row"><span class="key">Yol Mesafesi</span><span class="val">${active.distKm} km</span></div>
+      <div class="info-row"><span class="key">Tahmini Varış Süresi</span><span class="val" style="color:#3fb950">${active.etaMin} dakika</span></div>
       <div class="info-row"><span class="key">Ekip Uygunluk Skoru</span><span class="val" style="color:#58a6ff">%${Math.round(score * 100)}</span></div>
-      ${hasDetour ? `<div class="info-row"><span class="key">Güvenlik Seviyesi</span><span class="val" style="color:#3fb950">Maksimum — Tehlike önlendi</span></div>` : ''}
+      <div class="info-row"><span class="key">Güvenlik Seviyesi</span><span class="val" style="color:${routeColor}">${hasDetour ? 'Maksimum — Tehlike önlendi' : (_activeRouteKey === 'fast' ? 'Temel — Tehlike analizi yok' : 'Yüksek')}</span></div>
 
       <div class="sep"></div>
       <div style="font-size:11px;color:#6e7681;margin-bottom:6px">SKOR ANALİZİ</div>
       <div class="score-bar"><span class="score-label">Su Seviyesi</span><div class="score-track"><div class="score-fill" style="width:${team.water}%"></div></div><span class="score-val">%${team.water}</span></div>
       <div class="score-bar"><span class="score-label">Personel</span><div class="score-track"><div class="score-fill" style="width:${Math.min(100, team.personnel / 5 * 100)}%"></div></div><span class="score-val">${team.personnel}/5</span></div>
-      <div class="score-bar"><span class="score-label">Mesafe</span><div class="score-track"><div class="score-fill" style="width:${Math.round(Math.max(0, 1 - distKm / 30) * 100)}%"></div></div><span class="score-val">${distKm}km</span></div>
+      <div class="score-bar"><span class="score-label">Mesafe</span><div class="score-track"><div class="score-fill" style="width:${distPct}%"></div></div><span class="score-val">${active.distKm}km</span></div>
 
       ${stepsHTML}
 
@@ -1055,11 +1133,10 @@ async function calcRoute() {
       </div>
     </div>`;
 
-  drawRouteOnMap(routeMap, team, fire, routeCoords, safeResult);
-
-  AppState._lastRouteCoords = routeCoords;
-  AppState._lastRouteTeamId = team.id;
-  AppState._lastRouteFireId = fire.id;
+  drawRouteOnMap(routeMap, team, fire, active.coords, active.sp);
+  AppState._lastRouteCoords  = active.coords;
+  AppState._lastRouteTeamId  = team.id;
+  AppState._lastRouteFireId  = fire.id;
 }
 
 function drawRouteOnMap(targetMap, team, fire, routeCoords, safeResult) {
